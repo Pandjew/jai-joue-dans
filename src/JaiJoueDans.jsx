@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-
+import POOL from "./data/actors.json";
 /* ============================================================
    J'AI JOUÉ DANS — devine l'acteur à partir de sa filmographie
    ------------------------------------------------------------
@@ -16,107 +16,13 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
    }
    ============================================================ */
 
-const POOL = [
-  // ---------- FRANCE ----------
-  { id: "fr1", name: "Jean Dujardin", aka: [], region: "fr", level: "facile", films: [
-    { t: "OSS 117 : Le Caire, nid d'espions", y: 2006 }, { t: "The Artist", y: 2011 },
-    { t: "Brice de Nice", y: 2005 }, { t: "Le Loup de Wall Street", y: 2013 },
-    { t: "Un + une", y: 2015 }, { t: "Le Daim", y: 2019 } ] },
-  { id: "fr2", name: "Marion Cotillard", aka: [], region: "fr", level: "facile", films: [
-    { t: "La Môme", y: 2007 }, { t: "Inception", y: 2010 },
-    { t: "De rouille et d'os", y: 2012 }, { t: "The Dark Knight Rises", y: 2012 },
-    { t: "Taxi", y: 1998 }, { t: "Deux jours, une nuit", y: 2014 } ] },
-  { id: "fr3", name: "Omar Sy", aka: [], region: "fr", level: "facile", films: [
-    { t: "Intouchables", y: 2011 }, { t: "Chocolat", y: 2016 },
-    { t: "Samba", y: 2014 }, { t: "Jurassic World", y: 2015 },
-    { t: "Inferno", y: 2016 }, { t: "Tirailleurs", y: 2022 } ] },
-  { id: "fr4", name: "Jean Reno", aka: [], region: "fr", level: "facile", films: [
-    { t: "Léon", y: 1994 }, { t: "Le Grand Bleu", y: 1988 },
-    { t: "Les Visiteurs", y: 1993 }, { t: "Nikita", y: 1990 },
-    { t: "Mission: Impossible", y: 1996 }, { t: "Da Vinci Code", y: 2006 } ] },
-  { id: "fr5", name: "Audrey Tautou", aka: [], region: "fr", level: "facile", films: [
-    { t: "Le Fabuleux Destin d'Amélie Poulain", y: 2001 }, { t: "Un long dimanche de fiançailles", y: 2004 },
-    { t: "Coco avant Chanel", y: 2009 }, { t: "Da Vinci Code", y: 2006 },
-    { t: "Ensemble, c'est tout", y: 2007 }, { t: "L'Écume des jours", y: 2013 } ] },
-  { id: "fr6", name: "Vincent Cassel", aka: [], region: "fr", level: "moyen", films: [
-    { t: "La Haine", y: 1995 }, { t: "Black Swan", y: 2010 },
-    { t: "Mesrine : L'Instinct de mort", y: 2008 }, { t: "Le Pacte des loups", y: 2001 },
-    { t: "Les Rivières pourpres", y: 2000 }, { t: "Irréversible", y: 2002 } ] },
-  { id: "fr7", name: "Léa Seydoux", aka: [], region: "fr", level: "moyen", films: [
-    { t: "La Vie d'Adèle", y: 2013 }, { t: "Spectre", y: 2015 },
-    { t: "The Grand Budapest Hotel", y: 2014 }, { t: "Mourir peut attendre", y: 2021 },
-    { t: "La Belle et la Bête", y: 2014 }, { t: "Roubaix, une lumière", y: 2019 } ] },
-  { id: "fr8", name: "Fabrice Luchini", aka: [], region: "fr", level: "difficile", films: [
-    { t: "Les Femmes du 6e étage", y: 2010 }, { t: "Potiche", y: 2010 },
-    { t: "Dans la maison", y: 2012 }, { t: "Alceste à bicyclette", y: 2013 },
-    { t: "Molière", y: 2007 }, { t: "Le Mystère Henri Pick", y: 2019 } ] },
-
-  // ---------- EUROPE ----------
-  { id: "eu1", name: "Christoph Waltz", aka: [], region: "eu", level: "facile", films: [
-    { t: "Inglourious Basterds", y: 2009 }, { t: "Django Unchained", y: 2012 },
-    { t: "Spectre", y: 2015 }, { t: "Carnage", y: 2011 },
-    { t: "Alita: Battle Angel", y: 2019 }, { t: "Big Eyes", y: 2014 } ] },
-  { id: "eu2", name: "Penélope Cruz", aka: ["Penelope Cruz"], region: "eu", level: "facile", films: [
-    { t: "Vicky Cristina Barcelona", y: 2008 }, { t: "Volver", y: 2006 },
-    { t: "Vanilla Sky", y: 2001 }, { t: "Pirates des Caraïbes : La Fontaine de Jouvence", y: 2011 },
-    { t: "Blow", y: 2001 }, { t: "Madres paralelas", y: 2021 } ] },
-  { id: "eu3", name: "Daniel Craig", aka: [], region: "eu", level: "facile", films: [
-    { t: "Casino Royale", y: 2006 }, { t: "Skyfall", y: 2012 },
-    { t: "À couteaux tirés", y: 2019 }, { t: "Spectre", y: 2015 },
-    { t: "Millénium : Les hommes qui n'aimaient pas les femmes", y: 2011 }, { t: "Logan Lucky", y: 2017 } ] },
-  { id: "eu4", name: "Javier Bardem", aka: [], region: "eu", level: "moyen", films: [
-    { t: "No Country for Old Men", y: 2007 }, { t: "Skyfall", y: 2012 },
-    { t: "Vicky Cristina Barcelona", y: 2008 }, { t: "Dune", y: 2021 },
-    { t: "Mar adentro", y: 2004 }, { t: "Biutiful", y: 2010 } ] },
-  { id: "eu5", name: "Mads Mikkelsen", aka: [], region: "eu", level: "moyen", films: [
-    { t: "Casino Royale", y: 2006 }, { t: "Doctor Strange", y: 2016 },
-    { t: "Rogue One", y: 2016 }, { t: "La Chasse", y: 2012 },
-    { t: "Drunk", y: 2020 }, { t: "Le Guerrier silencieux", y: 2009 } ] },
-  { id: "eu6", name: "Monica Bellucci", aka: [], region: "eu", level: "moyen", films: [
-    { t: "Matrix Reloaded", y: 2003 }, { t: "Astérix & Obélix : Mission Cléopâtre", y: 2002 },
-    { t: "Le Pacte des loups", y: 2001 }, { t: "Malèna", y: 2000 },
-    { t: "Irréversible", y: 2002 }, { t: "Spectre", y: 2015 } ] },
-  { id: "eu7", name: "Tilda Swinton", aka: [], region: "eu", level: "difficile", films: [
-    { t: "Le Monde de Narnia", y: 2005 }, { t: "The Grand Budapest Hotel", y: 2014 },
-    { t: "Snowpiercer", y: 2013 }, { t: "We Need to Talk About Kevin", y: 2011 },
-    { t: "Only Lovers Left Alive", y: 2013 }, { t: "Suspiria", y: 2018 } ] },
-
-  // ---------- ÉTATS-UNIS ----------
-  { id: "us1", name: "Tom Hanks", aka: [], region: "us", level: "facile", films: [
-    { t: "Forrest Gump", y: 1994 }, { t: "Il faut sauver le soldat Ryan", y: 1998 },
-    { t: "La Ligne verte", y: 1999 }, { t: "Seul au monde", y: 2000 },
-    { t: "Philadelphia", y: 1993 }, { t: "Apollo 13", y: 1995 } ] },
-  { id: "us2", name: "Scarlett Johansson", aka: [], region: "us", level: "facile", films: [
-    { t: "Lost in Translation", y: 2003 }, { t: "Avengers", y: 2012 },
-    { t: "Her", y: 2013 }, { t: "Lucy", y: 2014 },
-    { t: "Marriage Story", y: 2019 }, { t: "Black Widow", y: 2021 } ] },
-  { id: "us3", name: "Denzel Washington", aka: [], region: "us", level: "facile", films: [
-    { t: "Training Day", y: 2001 }, { t: "Man on Fire", y: 2004 },
-    { t: "American Gangster", y: 2007 }, { t: "Equalizer", y: 2014 },
-    { t: "Malcolm X", y: 1992 }, { t: "Flight", y: 2012 } ] },
-  { id: "us4", name: "Samuel L. Jackson", aka: ["Samuel Jackson"], region: "us", level: "moyen", films: [
-    { t: "Pulp Fiction", y: 1994 }, { t: "Avengers", y: 2012 },
-    { t: "Django Unchained", y: 2012 }, { t: "Jackie Brown", y: 1997 },
-    { t: "Incassable", y: 2000 }, { t: "Des serpents dans l'avion", y: 2006 } ] },
-  { id: "us5", name: "Willem Dafoe", aka: [], region: "us", level: "moyen", films: [
-    { t: "Spider-Man", y: 2002 }, { t: "Platoon", y: 1986 },
-    { t: "Aquaman", y: 2018 }, { t: "The Lighthouse", y: 2019 },
-    { t: "The Florida Project", y: 2017 }, { t: "À la porte de l'éternité", y: 2018 } ] },
-  { id: "us6", name: "Frances McDormand", aka: [], region: "us", level: "difficile", films: [
-    { t: "Fargo", y: 1996 }, { t: "Three Billboards", y: 2017 },
-    { t: "Nomadland", y: 2020 }, { t: "Presque célèbre", y: 2000 },
-    { t: "Burn After Reading", y: 2008 }, { t: "Mississippi Burning", y: 1988 } ] },
-  { id: "us7", name: "Michael Shannon", aka: [], region: "us", level: "difficile", films: [
-    { t: "Man of Steel", y: 2013 }, { t: "La Forme de l'eau", y: 2017 },
-    { t: "Nocturnal Animals", y: 2016 }, { t: "Take Shelter", y: 2011 },
-    { t: "Les Noces rebelles", y: 2008 }, { t: "Loving", y: 2016 } ] },
-];
 
 /* ---------- Réglages de jeu ---------- */
 const CATEGORIES = [
   { id: "fr", label: "Acteurs français", regions: ["fr"] },
   { id: "eu", label: "Acteurs européens", regions: ["fr", "eu"] },
   { id: "us", label: "Acteurs américains", regions: ["us"] },
+  { id: "world", label: "Reste du monde", regions: ["other"] },
   { id: "global", label: "Global", regions: ["fr", "eu", "us", "other"] },
 ];
 const DIFFICULTIES = [

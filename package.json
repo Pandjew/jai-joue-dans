@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+	"build:actors": "node scripts/build-actors.mjs"
   },
   "dependencies": {
     "firebase": "^12.17.1",

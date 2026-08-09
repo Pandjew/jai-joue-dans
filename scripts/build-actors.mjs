@@ -23,6 +23,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import "dotenv/config";
+import { fileURLToPath } from "node:url";
 
 /* =========================== RÉGLAGES =========================== */
 const CONFIG = {
@@ -38,7 +39,7 @@ const CONFIG = {
   anyRoleMaxOrder: 9,    // « second rôle » inclus
 
   // Percentiles de notoriété, calculés à l'intérieur de chaque catégorie
-  pctFameHigh: 0.85,  // facile / moyen : top 15 %
+  pctFameHigh: 0.75,  // facile / moyen : top 15 %
   pctFameLow: 0.50,   // difficile      : top 50 %
 
   minFilmsPerActor: 5, // 3 affichés + 2 pour l'indice
@@ -63,7 +64,7 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, CONFIG.cacheDir);
 
 async function cached(key, fn) {
@@ -201,9 +202,11 @@ async function fetchNationalities(actors) {
   console.log("\n> Nationalités (Wikidata)");
   const ids = [...actors.keys()];
   const chunks = [];
-  for (let i = 0; i < ids.length; i += 250) chunks.push(ids.slice(i, i + 250));
+  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));	
 
   const map = new Map(); // tmdbId -> code ISO pays
+
+let failed = 0;
 
   await pool(chunks, async (chunk) => {
     const values = chunk.map((id) => `"${id}"`).join(" ");
@@ -215,30 +218,49 @@ async function fetchNationalities(actors) {
         ?country wdt:P297 ?iso .
       }`;
     const key = "wd:" + crypto.createHash("md5").update(sparql).digest("hex");
-    const json = await cached(key, async () => {
-      const res = await fetch("https://query.wikidata.org/sparql", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/sparql-results+json",
-          "User-Agent": "JaiJoueDans/1.0 (jeu de quiz cinéma)",
-        },
-        body: new URLSearchParams({ query: sparql }),
+
+    let json;
+    try {
+      json = await cached(key, async () => {
+        for (let attempt = 0; attempt < 6; attempt++) {
+          try {
+            const res = await fetch("https://query.wikidata.org/sparql", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/sparql-results+json",
+                "User-Agent": "JaiJoueDans/1.0 (jeu de quiz cinema)",
+              },
+              body: new URLSearchParams({ query: sparql }),
+            });
+            if (res.ok) return res.json();
+            if (![429, 500, 502, 503, 504].includes(res.status)) {
+              throw new Error(`Wikidata ${res.status}`);
+            }
+          } catch (e) {
+            if (attempt === 5) throw e;
+          }
+          // Attente croissante : 2s, 4s, 8s, 16s, 32s
+          await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
+        }
+        throw new Error("Wikidata : trop de tentatives");
       });
-      if (!res.ok) throw new Error(`Wikidata ${res.status}`);
-      return res.json();
-    });
+    } catch {
+      failed++;
+      return; // le lot n'est pas mis en cache, il sera retenté au prochain lancement
+    }
 
     for (const b of json.results.bindings) {
       const tmdbId = Number(b.tmdb.value);
       const iso = b.iso.value;
-      // Une personne peut avoir plusieurs nationalités : on privilégie FR, puis l'Europe
+	  const rank = (c) => (c === "FR" ? 3 : EU_COUNTRIES.includes(c) ? 2 : c === "US" ? 1 : 0);
       const prev = map.get(tmdbId);
-      if (!prev || iso === "FR" || (EU_COUNTRIES.includes(iso) && prev !== "FR")) {
-        map.set(tmdbId, iso);
-      }
+      if (!prev || rank(iso) > rank(prev)) map.set(tmdbId, iso);
     }
-  }, 4); // Wikidata n'aime pas la concurrence, on reste doux
+    await new Promise((r) => setTimeout(r, 300)); // on ménage l'endpoint public
+  }, 2);
+
+  if (failed) console.log(`\n   ${failed} lots en échec — relancez le script pour les rattraper.`); // Wikidata n'aime pas la concurrence, on reste doux
 
   console.log(`${map.size} acteurs rattachés à un pays.`);
   return map;
