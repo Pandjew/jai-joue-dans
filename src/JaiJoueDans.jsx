@@ -1,19 +1,23 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import POOL from "./data/actors.json";
+
 /* ============================================================
    J'AI JOUÉ DANS — devine l'acteur à partir de sa filmographie
    ------------------------------------------------------------
-   Le pool ci-dessous est un échantillon au FORMAT DÉFINITIF.
-   Le pipeline TMDB + Wikidata produira exactement cette forme :
+   actors.json est généré par scripts/build-actors.mjs (TMDB + Wikidata).
+   Chaque entrée :
 
    {
      id: string,            // "tmdb:1234"
      name: string,
-     aka: string[],         // alias / graphies alternatives
+     aka: string[],         // graphies alternatives acceptées
      region: "fr" | "eu" | "us" | "other",
-     level: "facile" | "moyen" | "difficile",  // seuil d'apparition
-     films: [{ t: string, y: number }]         // triés par notoriété desc.
+     level: "facile" | "moyen" | "difficile",
+     films: [{ t, y, eps?, y2? }]   // triés par notoriété décroissante
    }
+
+   eps / y2 ne sont présents que sur les sagas regroupées :
+   { t: "Harry Potter", eps: [2,3,4], y: 2002, y2: 2005 }
    ============================================================ */
 
 
@@ -22,7 +26,7 @@ const CATEGORIES = [
   { id: "fr", label: "Acteurs français", regions: ["fr"] },
   { id: "eu", label: "Acteurs européens", regions: ["fr", "eu"] },
   { id: "us", label: "Acteurs américains", regions: ["us"] },
-  { id: "world", label: "Reste du monde", regions: ["other"] },
+  { id: "world", label: "Reste du monde", regions: ["other"], noDiff: true },
   { id: "global", label: "Global", regions: ["fr", "eu", "us", "other"] },
 ];
 const DIFFICULTIES = [
@@ -96,12 +100,20 @@ function isMatch(guess, actor, pool) {
   }
   return false;
 }
-function initialsOf(name) {
+/* Une saga s'affiche « Harry Potter (2, 3, 4) » avec la plage d'années */
+const filmTitle = (f) => (f.eps && f.eps.length ? `${f.t} (${f.eps.join(", ")})` : f.t);
+const filmYear = (f) => (f.y2 && f.y2 !== f.y ? `${f.y}–${f.y2}` : String(f.y));
+
+/* « Jean Dujardin » -> « J _ _ _   D _ _ _ _ _ _ _ » */
+function maskedName(name) {
   return name
     .split(/\s+/)
     .filter(Boolean)
-    .map((w) => w[0].toUpperCase())
-    .join(". ") + ".";
+    .map((w) => {
+      const letters = [...w];
+      return letters[0].toUpperCase() + " " + letters.slice(1).map(() => "_").join(" ");
+    })
+    .join("\u2003");
 }
 
 /* ---------- Logo ---------- */
@@ -143,6 +155,7 @@ function Oscar({ size = 40, glow = false }) {
 
 const styleSheet = `
 @import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,700&family=Barlow+Condensed:wght@400;500;600&display=swap');
+html, body, #root { margin: 0; background: #260609; }
 .jjd * { box-sizing: border-box; }
 .jjd { font-family: 'Barlow Condensed', 'Arial Narrow', system-ui, sans-serif; }
 .jjd h1, .jjd h2, .jjd .display { font-family: 'Bodoni Moda', Didot, Georgia, serif; }
@@ -228,7 +241,9 @@ export default function App() {
   const activePool = useMemo(() => {
     const cat = CATEGORIES.find((c) => c.id === category);
     const dif = DIFFICULTIES.find((d) => d.id === difficulty);
-    return POOL.filter((a) => cat.regions.includes(a.region) && dif.levels.includes(a.level));
+    return POOL.filter(
+      (a) => cat.regions.includes(a.region) && (cat.noDiff || dif.levels.includes(a.level))
+    );
   }, [category, difficulty]);
 
   useEffect(() => {
@@ -303,7 +318,8 @@ export default function App() {
     // TODO : remplacer par addDoc(collection(db, "scores"), entry)
     const entry = {
       pseudo: pseudo.trim() || "Anonyme",
-      score, categorie: category, difficulte: difficulty,
+      score, categorie: category,
+      difficulte: CATEGORIES.find((c) => c.id === category).noDiff ? "tous" : difficulty,
       streak: best, createdAt: Date.now(),
     };
     setBoard((b) => [...b, entry].sort((x, y) => y.score - x.score).slice(0, 10));
@@ -312,13 +328,16 @@ export default function App() {
   }
 
   const shownFilms = current ? current.films.slice(0, hints >= 1 ? 5 : 3) : [];
-  const catLabel = CATEGORIES.find((c) => c.id === category).label;
-  const difLabel = DIFFICULTIES.find((d) => d.id === difficulty).label;
+  const activeCat = CATEGORIES.find((c) => c.id === category);
+  const catLabel = activeCat.label;
+  const difLabel = activeCat.noDiff
+    ? "Tous niveaux"
+    : DIFFICULTIES.find((d) => d.id === difficulty).label;
 
   const shell = {
     minHeight: "100vh", width: "100%", color: C.cream,
     background: `radial-gradient(120% 80% at 50% -10%, ${C.curtain} 0%, ${C.deep} 55%, #260609 100%)`,
-    display: "flex", justifyContent: "center", padding: "24px 16px 40px",
+    display: "flex", justifyContent: "center", padding: "24px 22px 48px",
   };
   const panel = { width: "100%", maxWidth: 560, display: "flex", flexDirection: "column", gap: 20 };
   const goldBtn = {
@@ -373,18 +392,26 @@ export default function App() {
               </div>
             </section>
 
-            <section>
-              <div style={{ fontSize: 11, letterSpacing: ".3em", textTransform: "uppercase",
-                            color: C.gold, marginBottom: 8 }}>Difficulté</div>
-              <div style={{ display: "grid", gap: 8 }}>
-                {DIFFICULTIES.map((d) => (
-                  <Pill key={d.id} active={difficulty === d.id} sub={d.note}
-                        onClick={() => setDifficulty(d.id)}>
-                    {d.label}
-                  </Pill>
-                ))}
-              </div>
-            </section>
+            {activeCat.noDiff ? (
+              <p style={{ margin: 0, textAlign: "center", fontSize: 14, opacity: .6,
+                          lineHeight: 1.5, padding: "0 8px" }}>
+                Cette catégorie réunit tous les niveaux : les acteurs y sont
+                trop peu nombreux pour être répartis.
+              </p>
+            ) : (
+              <section>
+                <div style={{ fontSize: 11, letterSpacing: ".3em", textTransform: "uppercase",
+                              color: C.gold, marginBottom: 8 }}>Difficulté</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {DIFFICULTIES.map((d) => (
+                    <Pill key={d.id} active={difficulty === d.id} sub={d.note}
+                          onClick={() => setDifficulty(d.id)}>
+                      {d.label}
+                    </Pill>
+                  ))}
+                </div>
+              </section>
+            )}
 
             <button className="jjd-btn" style={goldBtn} onClick={start}
                     disabled={activePool.length === 0}>
@@ -428,8 +455,8 @@ export default function App() {
                                borderBottom: i < shownFilms.length - 1 ? "1px solid #ffffff1f" : "none",
                                paddingBottom: i < shownFilms.length - 1 ? 12 : 0 }}>
                     <span style={{ fontSize: 18, letterSpacing: ".04em", textTransform: "uppercase",
-                                   fontWeight: 500, lineHeight: 1.2 }}>{f.t}</span>
-                    <span style={{ color: C.goldLight, fontSize: 15, flexShrink: 0 }}>{f.y}</span>
+                                   fontWeight: 500, lineHeight: 1.2 }}>{filmTitle(f)}</span>
+                    <span style={{ color: C.goldLight, fontSize: 15, flexShrink: 0 }}>{filmYear(f)}</span>
                   </li>
                 ))}
               </ol>
@@ -438,8 +465,9 @@ export default function App() {
                      borderTop: `1px solid ${C.gold}55`, paddingTop: 14 }}>
                   <span style={{ fontSize: 11, letterSpacing: ".3em", textTransform: "uppercase",
                                  opacity: .6, display: "block", marginBottom: 4 }}>Initiales</span>
-                  <span className="display" style={{ fontSize: 30, color: C.goldLight, letterSpacing: ".1em" }}>
-                    {initialsOf(current.name)}
+                  <span className="display" style={{ fontSize: 24, color: C.goldLight,
+                                 lineHeight: 1.6, wordBreak: "break-word" }}>
+                    {maskedName(current.name)}
                   </span>
                 </div>
               )}
@@ -511,23 +539,25 @@ export default function App() {
               <div style={{ fontSize: 11, letterSpacing: ".3em", textTransform: "uppercase",
                             color: C.gold, marginBottom: 12 }}>Filmographie</div>
               <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 9 }}>
-                {reveal.actor.films.map((f, i) => {
+                {reveal.actor.films.slice(0, 5).map((f, i) => {
                   const wasShown = i < reveal.shown;
                   return (
                     <li key={f.t + f.y} style={{ display: "flex", justifyContent: "space-between",
                          gap: 12, fontSize: 16, opacity: wasShown ? .45 : 1 }}>
                       <span style={{ textTransform: "uppercase", letterSpacing: ".03em" }}>
                         {!wasShown && <span style={{ color: C.gold, marginRight: 8 }}>◆</span>}
-                        {f.t}
+                        {filmTitle(f)}
                       </span>
-                      <span style={{ color: wasShown ? "inherit" : C.goldLight, flexShrink: 0 }}>{f.y}</span>
+                      <span style={{ color: wasShown ? "inherit" : C.goldLight, flexShrink: 0 }}>{filmYear(f)}</span>
                     </li>
                   );
                 })}
               </ul>
-              <div style={{ fontSize: 12, opacity: .45, marginTop: 14 }}>
-                ◆ Films que vous n'aviez pas vus
-              </div>
+              {reveal.shown < 5 && (
+                <div style={{ fontSize: 12, opacity: .45, marginTop: 14 }}>
+                  ◆ Films que l'indice aurait révélés
+                </div>
+              )}
             </div>
 
             <button className="jjd-btn" style={goldBtn} onClick={afterReveal}>
