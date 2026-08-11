@@ -157,7 +157,8 @@ async function buildFilmCorpus() {
     if (!year || year < CONFIG.minYear) continue;
     const title = (m.title || m.original_title || "").trim();
     if (!title) continue;
-    films.set(m.id, { id: m.id, t: title, y: year, votes: m.vote_count, col: null });
+    films.set(m.id, { id: m.id, t: title, y: year, votes: m.vote_count, col: null,
+                       oc: m.origin_country ?? [] });
   }
   console.log(`\n${films.size} films retenus au total.`);
   return films;
@@ -175,6 +176,12 @@ async function buildCredits(films) {
       data = await tmdb(`/movie/${filmId}`, { append_to_response: "credits" });
     } catch {
       return;
+    }
+    const f0 = films.get(filmId);
+    if (f0 && !f0.oc.length) {
+      f0.oc = data.origin_country?.length
+        ? data.origin_country
+        : (data.production_countries ?? []).map((c) => c.iso_3166_1);
     }
     if (data.belongs_to_collection) {
       films.get(filmId).col = {
@@ -287,12 +294,11 @@ async function fetchNationalities(actors) {
       return;
     }
 
-    const rank = (c) => (c === "FR" ? 3 : EU_COUNTRIES.includes(c) ? 2 : c === "US" ? 1 : 0);
     for (const b of json.results.bindings) {
       const tmdbId = Number(b.tmdb.value);
-      const iso = b.iso.value;
-      const prev = map.get(tmdbId);
-      if (!prev || rank(iso) > rank(prev)) map.set(tmdbId, iso);
+      let set = map.get(tmdbId);
+      if (!set) { set = new Set(); map.set(tmdbId, set); }
+      set.add(b.iso.value);
     }
     await new Promise((r) => setTimeout(r, 300));
   }, 2);
@@ -302,11 +308,25 @@ async function fetchNationalities(actors) {
   return map;
 }
 
-function regionOf(iso) {
-  if (iso === "FR") return "fr";
-  if (EU_COUNTRIES.includes(iso)) return "eu";
-  if (iso === "US") return "us";
-  return "other";
+const regionOf = (iso) =>
+  iso === "FR" ? "fr" : EU_COUNTRIES.includes(iso) ? "eu" : iso === "US" ? "us" : "other";
+
+// Un acteur peut relever de plusieurs régions (double nationalité).
+// L'ordre est stable : fr, eu, us, other.
+const ORDER = ["fr", "eu", "us", "other"];
+function regionsOf(isoSet) {
+  const set = new Set([...isoSet].map(regionOf));
+  return ORDER.filter((r) => set.has(r));
+}
+
+// Une entrée de filmographie relève-t-elle de cette région ?
+function filmMatchesRegion(f, region) {
+  const oc = f.oc ?? [];
+  if (!oc.length) return false;
+  if (region === "fr") return oc.includes("FR");
+  if (region === "eu") return oc.some((c) => EU_COUNTRIES.includes(c) || c === "FR");
+  if (region === "us") return oc.includes("US");
+  return oc.some((c) => c !== "FR" && c !== "US" && !EU_COUNTRIES.includes(c));
 }
 
 /* ================= 5 & 6. SEUILS ET ASSEMBLAGE ================= */
@@ -338,12 +358,12 @@ function groupSeries(filmList, epNumbers) {
   return ordered.map((e) => {
     if (e.single) {
       const f = e.single;
-      return { t: f.t, y: f.y, votes: f.votes, order: f.order };
+      return { t: f.t, y: f.y, votes: f.votes, order: f.order, oc: f.oc };
     }
     const items = e.group.items;
     if (items.length === 1) {
       const f = items[0];
-      return { t: f.t, y: f.y, votes: f.votes, order: f.order };
+      return { t: f.t, y: f.y, votes: f.votes, order: f.order, oc: f.oc };
     }
     const eps = items.map((f) => epNumbers.get(f.id)).filter(Boolean).sort((a, b) => a - b);
     const years = items.map((f) => f.y).sort((a, b) => a - b);
@@ -354,6 +374,7 @@ function groupSeries(filmList, epNumbers) {
       y2: years[years.length - 1],
       votes: Math.max(...items.map((f) => f.votes)),
       order: Math.min(...items.map((f) => f.order)),
+      oc: [...new Set(items.flatMap((f) => f.oc ?? []))],
     };
   });
 }
@@ -363,8 +384,8 @@ function assemble(actors, films, natMap, epNumbers) {
 
   const enriched = [];
   for (const a of actors.values()) {
-    const iso = natMap.get(a.id);
-    if (!iso) continue;
+    const isoSet = natMap.get(a.id);
+    if (!isoSet || !isoSet.size) continue;
 
     const seen = new Set();
     const filmo = a.roles
@@ -375,15 +396,15 @@ function assemble(actors, films, natMap, epNumbers) {
       .filter((f) => f && f.t && !seen.has(f.id) && seen.add(f.id));
 
     const grouped = groupSeries(filmo, epNumbers).sort((x, y) => y.votes - x.votes);
-    enriched.push({ ...a, region: regionOf(iso), films: grouped });
+    enriched.push({ ...a, regions: regionsOf(isoSet), films: grouped });
   }
 
-  // Seuils par catégorie, calculés sur les entrées regroupées
+  // Seuils par région, calculés sur les entrées regroupées des acteurs concernés
   const thresholds = {};
-  for (const region of ["fr", "eu", "us", "other"]) {
+  for (const region of ORDER) {
     const votes = [];
     for (const a of enriched) {
-      if (a.region !== region) continue;
+      if (!a.regions.includes(region)) continue;
       for (const f of a.films) votes.push(f.votes);
     }
     votes.sort((x, y) => x - y);
@@ -396,28 +417,60 @@ function assemble(actors, films, natMap, epNumbers) {
     );
   }
 
+  const levelFor = (filmList, th) => {
+    const main = filmList.filter((f) => f.order <= CONFIG.mainRoleMaxOrder && f.votes >= th.high);
+    const any = filmList.filter((f) => f.votes >= th.high);
+    const wide = filmList.filter((f) => f.votes >= th.low);
+    if (main.length >= CONFIG.minFilmsPerActor) return ["facile", any];
+    if (any.length >= CONFIG.minFilmsPerActor) return ["moyen", any];
+    if (wide.length >= CONFIG.minFilmsPerActor) return ["difficile", wide];
+    return [null, null];
+  };
+
+  const RANK = { facile: 0, moyen: 1, difficile: 2 };
+
+  /**
+   * Remonte dans les 3 premières places le meilleur film de chaque région
+   * de l'acteur. Sans cela, un acteur français à carrière internationale
+   * n'afficherait que des films étrangers, ce qui rend la devinette
+   * incohérente avec la catégorie choisie.
+   */
+  function hoistRegional(selection, regions) {
+    const out = [...selection];
+    let slot = 0;
+    for (const region of regions) {
+      if (slot >= 3) break;
+      const i = out.findIndex((f, idx) => idx >= slot && filmMatchesRegion(f, region));
+      if (i === -1) continue;
+      const [f] = out.splice(i, 1);
+      out.splice(slot, 0, f);
+      slot++;
+    }
+    return out;
+  }
+
   const out = [];
   for (const a of enriched) {
-    const th = thresholds[a.region];
-    const main = a.films.filter((f) => f.order <= CONFIG.mainRoleMaxOrder && f.votes >= th.high);
-    const any = a.films.filter((f) => f.votes >= th.high);
-    const wide = a.films.filter((f) => f.votes >= th.low);
+    const levels = {};
+    let best = null;
+    for (const region of a.regions) {
+      const [level, selection] = levelFor(a.films, thresholds[region]);
+      if (!level) continue;
+      levels[region] = level;
+      if (!best || RANK[level] < RANK[best.level]) best = { level, selection };
+    }
+    if (!best) continue;
 
-    let level = null;
-    let selection = null;
-    if (main.length >= CONFIG.minFilmsPerActor) { level = "facile"; selection = any; }
-    else if (any.length >= CONFIG.minFilmsPerActor) { level = "moyen"; selection = any; }
-    else if (wide.length >= CONFIG.minFilmsPerActor) { level = "difficile"; selection = wide; }
-    if (!level) continue;
+    const ordered = hoistRegional(best.selection, a.regions);
 
     out.push({
       id: `tmdb:${a.id}`,
       name: a.name,
       aka: [],
-      region: a.region,
-      level,
+      regions: a.regions,
+      levels,
       photo: a.photo || null,
-      films: selection.slice(0, CONFIG.maxFilmsPerActor).map((f) => {
+      films: ordered.slice(0, CONFIG.maxFilmsPerActor).map((f) => {
         const e = { t: f.t, y: f.y };
         if (f.eps && f.eps.length) e.eps = f.eps;
         if (f.y2 && f.y2 !== f.y) e.y2 = f.y2;
@@ -439,8 +492,10 @@ const finalPool = assemble(actors, films, natMap, epNumbers);
 
 const counts = {};
 for (const a of finalPool) {
-  const k = `${a.region}/${a.level}`;
-  counts[k] = (counts[k] || 0) + 1;
+  for (const [region, level] of Object.entries(a.levels)) {
+    const k = `${region}/${level}`;
+    counts[k] = (counts[k] || 0) + 1;
+  }
 }
 console.log("\n=== Pool final ===");
 console.log(`${finalPool.length} acteurs`);
@@ -459,6 +514,9 @@ for (const a of finalPool) {
   byLast.set(last, (byLast.get(last) || 0) + 1);
 }
 console.log(`${[...byLast].filter(([, n]) => n > 1).length} patronymes partagés.`);
+
+const multi = finalPool.filter((a) => a.regions.length > 1).length;
+console.log(`${multi} acteurs à nationalité multiple (badge en jeu).`);
 
 const outPath = path.resolve(here, CONFIG.outFile);
 await fs.mkdir(path.dirname(outPath), { recursive: true });

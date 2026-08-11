@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useId } from "react";
 import POOL from "./data/actors.json";
 
 /* ============================================================
@@ -11,8 +11,9 @@ import POOL from "./data/actors.json";
      id: string,            // "tmdb:1234"
      name: string,
      aka: string[],         // graphies alternatives acceptées
-     region: "fr" | "eu" | "us" | "other",
-     level: "facile" | "moyen" | "difficile",
+     regions: ("fr"|"eu"|"us"|"other")[],   // plusieurs si double nationalité
+     levels: { [region]: "facile"|"moyen"|"difficile" },
+     photo: string | null,                  // chemin TMDB, ex. "/abc.jpg"
      films: [{ t, y, eps?, y2? }]   // triés par notoriété décroissante
    }
 
@@ -146,37 +147,37 @@ function maskedName(name) {
 
 /* ---------- Logo ---------- */
 function Oscar({ size = 40, glow = false }) {
+  // useId évite que plusieurs statuettes sur la page partagent le même gradient
+  const gid = "osc" + useId().replace(/:/g, "");
   return (
     <svg viewBox="0 0 48 96" width={size} height={size * 2} aria-hidden="true"
          style={{ filter: glow ? `drop-shadow(0 0 10px ${C.gold}88)` : "none" }}>
       <defs>
-        <linearGradient id="og" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor={C.goldLight} />
           <stop offset="45%" stopColor={C.gold} />
           <stop offset="100%" stopColor="#8A6A12" />
         </linearGradient>
       </defs>
-      <g fill="url(#og)">
-        {/* tête */}
-        <circle cx="24" cy="9.6" r="6.3" />
-        {/* corps : épaules larges, flancs droits, léger fuseau vers les pieds */}
-        <path d="M24 15.6c5.3 0 9.1 1.7 11.2 5 1.6 2.5 2 5.4 1.7 8.5l-2.1 22.8c-.3 3.1-.8 5.5-1.4 7.3H14.6c-.6-1.8-1.1-4.2-1.4-7.3l-2.1-22.8c-.3-3.1.1-6 1.7-8.5 2.1-3.3 5.9-5 11.2-5z" />
-        {/* socle */}
-        <rect x="15.4" y="59.2" width="17.2" height="3.6" rx="1" />
-        <rect x="12.4" y="62.8" width="23.2" height="4.6" rx="1.2" />
-        <path d="M13 67.4h22l1.6 17.2H11.4z" />
+      <g fill={`url(#${gid})`}>
+        {/* tête et nuque */}
+        <ellipse cx="24" cy="8.6" rx="4.6" ry="5.4" />
+        <rect x="21.9" y="12" width="4.2" height="3.2" />
+        {/* corps : épaules larges, taille marquée, jambes séparées (fuseau évidé) */}
+        <path fillRule="evenodd" d="M24 14C28 14 31.6 15.6 33.4 18.6C34.8 21 35.2 24 34.8 27.4C34.2 32 32.4 35.6 31.6 39.6C31.1 42.4 31.6 45.2 32.2 48.4C33 53 32.8 61 32 67.6C31.5 71.2 31.2 72.8 31 74.2L17 74.2C16.8 72.8 16.5 71.2 16 67.6C15.2 61 15 53 15.8 48.4C16.4 45.2 16.9 42.4 16.4 39.6C15.6 35.6 13.8 32 13.2 27.4C12.8 24 13.2 21 14.6 18.6C16.4 15.6 20 14 24 14Z M24 50C25 57 25.2 67 25.2 74.2L22.8 74.2C22.8 67 23 57 24 50Z" />
+        {/* socle en deux redans */}
+        <path d="M15.2 74.2L32.8 74.2L33.4 79.4L14.6 79.4Z" />
+        <path d="M12.4 79.4L35.6 79.4L37.8 92.8L10.2 92.8Z" />
       </g>
-      {/* bras plaqués le long du corps */}
-      <g stroke="#00000040" strokeWidth="1.1" fill="none" strokeLinecap="round">
-        <path d="M16.3 22.6c-.9 8-1 17.4-.4 26.2" />
-        <path d="M31.7 22.6c.9 8 1 17.4.4 26.2" />
+      {/* bras croisés, mains jointes sur l'épée */}
+      <g fill="none" stroke="#7A5A10" strokeOpacity=".5" strokeWidth="1.15" strokeLinecap="round">
+        <path d="M15.6 25C16.2 32 18.6 36.4 23.2 37.6" />
+        <path d="M32.4 25C31.8 32 29.4 36.4 24.8 37.6" />
+        <path d="M20.6 37.2L27.4 37.2" />
+        <path d="M24 39L24 57" />
       </g>
-      {/* épée tenue devant */}
-      <g fill="#00000033">
-        <rect x="22.9" y="27.5" width="2.2" height="28.5" rx="1" />
-        <rect x="19.7" y="27.5" width="8.6" height="1.8" rx=".9" />
-      </g>
-      <path d="M13 67.4h22l.5 4.6H12.5z" fill="#00000030" />
+      {/* arête du socle */}
+      <path d="M12.4 79.4L35.6 79.4L35.9 81.5L12.1 81.5Z" fill="#00000022" />
     </svg>
   );
 }
@@ -269,8 +270,11 @@ export default function App() {
   const activePool = useMemo(() => {
     const cat = CATEGORIES.find((c) => c.id === category);
     const dif = DIFFICULTIES.find((d) => d.id === difficulty);
-    return POOL.filter(
-      (a) => cat.regions.includes(a.region) && (cat.noDiff || dif.levels.includes(a.level))
+    // Un acteur peut relever de plusieurs régions et avoir un niveau par région.
+    return POOL.filter((a) =>
+      cat.regions.some(
+        (r) => a.levels[r] && (cat.noDiff || dif.levels.includes(a.levels[r]))
+      )
     );
   }, [category, difficulty]);
 
@@ -475,6 +479,15 @@ export default function App() {
                             color: C.goldLight, textAlign: "center", marginBottom: 16, opacity: .85 }}>
                 A joué dans
               </div>
+              {current.regions.length > 1 && (
+                <div style={{ textAlign: "center", marginTop: -8, marginBottom: 16 }}>
+                  <span style={{ fontSize: 10, letterSpacing: ".2em", textTransform: "uppercase",
+                                 color: C.goldLight, opacity: .75, border: `1px solid ${C.gold}66`,
+                                 borderRadius: 99, padding: "3px 11px" }}>
+                    ✦ Double nationalité
+                  </span>
+                </div>
+              )}
               <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 12 }}>
                 {shownFilms.map((f, i) => (
                   <li key={f.t + f.y} className={i >= 3 ? "jjd-in" : ""}
