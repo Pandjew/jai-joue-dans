@@ -12,8 +12,9 @@ import oscarImg from "./assets/oscar.png";
      id: string,            // "tmdb:1234"
      name: string,
      aka: string[],         // graphies alternatives acceptées
-     regions: ("fr"|"eu"|"us"|"other")[],   // plusieurs si double nationalité
-     levels: { [region]: "facile"|"moyen"|"difficile" },
+     region: "fr"|"eu"|"us"|"other",        // région principale (pays de naissance)
+     regions: (...)[],                      // toutes ses nationalités -> badge
+     level: "facile"|"moyen"|"difficile",
      photo: string | null,                  // chemin TMDB, ex. "/abc.jpg"
      films: [{ t, y, eps?, y2? }]   // triés par notoriété décroissante
    }
@@ -254,11 +255,9 @@ export default function App() {
   const activePool = useMemo(() => {
     const cat = CATEGORIES.find((c) => c.id === category);
     const dif = DIFFICULTIES.find((d) => d.id === difficulty);
-    // Un acteur peut relever de plusieurs régions et avoir un niveau par région.
-    return POOL.filter((a) =>
-      cat.regions.some(
-        (r) => a.levels[r] && (cat.noDiff || dif.levels.includes(a.levels[r]))
-      )
+    // Le classement se fait sur la région principale ; `regions` ne sert qu'au badge.
+    return POOL.filter(
+      (a) => cat.regions.includes(a.region) && (cat.noDiff || dif.levels.includes(a.level))
     );
   }, [category, difficulty]);
 

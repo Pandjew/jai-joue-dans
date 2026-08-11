@@ -37,8 +37,8 @@ const CONFIG = {
   mainRoleMaxOrder: 2,   // « tête d'affiche »
   anyRoleMaxOrder: 9,    // second rôle inclus
 
-  pctFameHigh: 0.82,  // facile / moyen
-  pctFameLow: 0.60,   // difficile
+  pctFameHigh: 0.75,  // facile / moyen
+  pctFameLow: 0.50,   // difficile
 
   minFilmsPerActor: 5, // 3 affichés + 2 pour l'indice — après regroupement des sagas
   maxFilmsPerActor: 8,
@@ -255,12 +255,15 @@ async function fetchNationalities(actors) {
 
   await pool(chunks, async (chunk) => {
     const values = chunk.map((id) => `"${id}"`).join(" ");
+    // P27 = nationalité(s), P19 = lieu de naissance -> P17 pays -> P297 code ISO.
+    // Le pays de naissance sert à départager les binationaux.
     const sparql = `
-      SELECT ?tmdb ?iso WHERE {
+      SELECT ?tmdb ?iso ?biso WHERE {
         VALUES ?tmdb { ${values} }
         ?person wdt:P4985 ?tmdb ;
                 wdt:P27 ?country .
         ?country wdt:P297 ?iso .
+        OPTIONAL { ?person wdt:P19/wdt:P17/wdt:P297 ?biso . }
       }`;
     const key = "wd:" + crypto.createHash("md5").update(sparql).digest("hex");
 
@@ -296,9 +299,10 @@ async function fetchNationalities(actors) {
 
     for (const b of json.results.bindings) {
       const tmdbId = Number(b.tmdb.value);
-      let set = map.get(tmdbId);
-      if (!set) { set = new Set(); map.set(tmdbId, set); }
-      set.add(b.iso.value);
+      let rec = map.get(tmdbId);
+      if (!rec) { rec = { nat: new Set(), born: null }; map.set(tmdbId, rec); }
+      rec.nat.add(b.iso.value);
+      if (b.biso && !rec.born) rec.born = b.biso.value;
     }
     await new Promise((r) => setTimeout(r, 300));
   }, 2);
@@ -317,6 +321,27 @@ const ORDER = ["fr", "eu", "us", "other"];
 function regionsOf(isoSet) {
   const set = new Set([...isoSet].map(regionOf));
   return ORDER.filter((r) => set.has(r));
+}
+
+/**
+ * Région « principale » d'un acteur.
+ * 1. Le pays de naissance, s'il correspond à l'une de ses nationalités.
+ * 2. Sinon, la région où il a le plus de films éligibles.
+ * 3. Sinon, la première par ordre de priorité.
+ * Sans cela, tout binational atterrit chez les Français et noie la catégorie.
+ */
+function primaryRegion(regions, born, films) {
+  if (regions.length === 1) return regions[0];
+  if (born) {
+    const r = regionOf(born);
+    if (regions.includes(r)) return r;
+  }
+  let best = null;
+  for (const r of regions) {
+    const n = films.filter((f) => filmMatchesRegion(f, r)).length;
+    if (!best || n > best.n) best = { r, n };
+  }
+  return best && best.n > 0 ? best.r : regions[0];
 }
 
 // Une entrée de filmographie relève-t-elle de cette région ?
@@ -384,8 +409,8 @@ function assemble(actors, films, natMap, epNumbers) {
 
   const enriched = [];
   for (const a of actors.values()) {
-    const isoSet = natMap.get(a.id);
-    if (!isoSet || !isoSet.size) continue;
+    const rec = natMap.get(a.id);
+    if (!rec || !rec.nat.size) continue;
 
     const seen = new Set();
     const filmo = a.roles
@@ -396,7 +421,13 @@ function assemble(actors, films, natMap, epNumbers) {
       .filter((f) => f && f.t && !seen.has(f.id) && seen.add(f.id));
 
     const grouped = groupSeries(filmo, epNumbers).sort((x, y) => y.votes - x.votes);
-    enriched.push({ ...a, regions: regionsOf(isoSet), films: grouped });
+    const regions = regionsOf(rec.nat);
+    enriched.push({
+      ...a,
+      regions,
+      region: primaryRegion(regions, rec.born, grouped),
+      films: grouped,
+    });
   }
 
   // Seuils par région, calculés sur les entrées regroupées des acteurs concernés
@@ -404,7 +435,7 @@ function assemble(actors, films, natMap, epNumbers) {
   for (const region of ORDER) {
     const votes = [];
     for (const a of enriched) {
-      if (!a.regions.includes(region)) continue;
+      if (a.region !== region) continue;
       for (const f of a.films) votes.push(f.votes);
     }
     votes.sort((x, y) => x - y);
@@ -426,8 +457,6 @@ function assemble(actors, films, natMap, epNumbers) {
     if (wide.length >= CONFIG.minFilmsPerActor) return ["difficile", wide];
     return [null, null];
   };
-
-  const RANK = { facile: 0, moyen: 1, difficile: 2 };
 
   /**
    * Remonte dans les 3 premières places le meilleur film de chaque région
@@ -451,24 +480,23 @@ function assemble(actors, films, natMap, epNumbers) {
 
   const out = [];
   for (const a of enriched) {
-    const levels = {};
-    let best = null;
-    for (const region of a.regions) {
-      const [level, selection] = levelFor(a.films, thresholds[region]);
-      if (!level) continue;
-      levels[region] = level;
-      if (!best || RANK[level] < RANK[best.level]) best = { level, selection };
-    }
-    if (!best) continue;
+    // Le niveau se calcule avec le seuil de la région principale uniquement.
+    const [level, selection] = levelFor(a.films, thresholds[a.region]);
+    if (!level) continue;
 
-    const ordered = hoistRegional(best.selection, a.regions);
+    // La région principale passe en tête pour que son film remonte en premier.
+    const ordered = hoistRegional(selection, [
+      a.region,
+      ...a.regions.filter((r) => r !== a.region),
+    ]);
 
     out.push({
       id: `tmdb:${a.id}`,
       name: a.name,
       aka: [],
+      region: a.region,
       regions: a.regions,
-      levels,
+      level,
       photo: a.photo || null,
       films: ordered.slice(0, CONFIG.maxFilmsPerActor).map((f) => {
         const e = { t: f.t, y: f.y };
@@ -492,10 +520,8 @@ const finalPool = assemble(actors, films, natMap, epNumbers);
 
 const counts = {};
 for (const a of finalPool) {
-  for (const [region, level] of Object.entries(a.levels)) {
-    const k = `${region}/${level}`;
-    counts[k] = (counts[k] || 0) + 1;
-  }
+  const k = `${a.region}/${a.level}`;
+  counts[k] = (counts[k] || 0) + 1;
 }
 console.log("\n=== Pool final ===");
 console.log(`${finalPool.length} acteurs`);
@@ -517,6 +543,10 @@ console.log(`${[...byLast].filter(([, n]) => n > 1).length} patronymes partagés
 
 const multi = finalPool.filter((a) => a.regions.length > 1).length;
 console.log(`${multi} acteurs à nationalité multiple (badge en jeu).`);
+
+const noBirth = finalPool.filter(
+  (a) => a.regions.length > 1 && !a.regions.includes(a.region)).length;
+if (noBirth) console.log(`${noBirth} binationaux départagés par leur filmographie.`);
 
 const outPath = path.resolve(here, CONFIG.outFile);
 await fs.mkdir(path.dirname(outPath), { recursive: true });
