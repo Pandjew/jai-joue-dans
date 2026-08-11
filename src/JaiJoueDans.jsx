@@ -104,6 +104,34 @@ function isMatch(guess, actor, pool) {
 const filmTitle = (f) => (f.eps && f.eps.length ? `${f.t} (${f.eps.join(", ")})` : f.t);
 const filmYear = (f) => (f.y2 && f.y2 !== f.y ? `${f.y}–${f.y2}` : String(f.y));
 
+/* Portrait TMDB, avec repli sur la statuette si absent ou en échec */
+function Portrait({ actor }) {
+  const [failed, setFailed] = useState(false);
+  const src = actor.photo && !failed
+    ? `https://image.tmdb.org/t/p/w185${actor.photo}`
+    : null;
+
+  const frame = {
+    width: 116, height: 116, borderRadius: "50%", overflow: "hidden",
+    border: `2px solid ${C.gold}`, boxShadow: `0 0 22px ${C.gold}55`,
+    background: C.curtain, display: "flex", alignItems: "center",
+    justifyContent: "center", flexShrink: 0,
+  };
+
+  return (
+    <div style={frame}>
+      {src ? (
+        <img
+          src={src} alt="" loading="lazy" onError={() => setFailed(true)}
+          style={{ width: "100%", height: "100%", objectFit: "cover",
+                   objectPosition: "center 22%" }} />
+      ) : (
+        <span style={{ opacity: .45, lineHeight: 0 }}><Oscar size={34} /></span>
+      )}
+    </div>
+  );
+}
+
 /* « Jean Dujardin » -> « J _ _ _   D _ _ _ _ _ _ _ » */
 function maskedName(name) {
   return name
@@ -521,6 +549,9 @@ export default function App() {
                             color: reveal.outcome === "trouve" ? C.goldLight : "#E4726A" }}>
                 {reveal.outcome === "trouve" ? "Bonne réponse"
                   : reveal.outcome === "passe" ? "Acteur passé" : "Manqué"}
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", margin: "16px 0 2px" }}>
+                <Portrait actor={reveal.actor} />
               </div>
               <h2 className="display" style={{ margin: "10px 0 0", fontSize: 34, fontWeight: 400,
                                                color: C.cream, lineHeight: 1.15 }}>

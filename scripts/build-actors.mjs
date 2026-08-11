@@ -37,8 +37,8 @@ const CONFIG = {
   mainRoleMaxOrder: 2,   // « tête d'affiche »
   anyRoleMaxOrder: 9,    // second rôle inclus
 
-  pctFameHigh: 0.85,  // facile / moyen
-  pctFameLow: 0.65,   // difficile
+  pctFameHigh: 0.75,  // facile / moyen
+  pctFameLow: 0.50,   // difficile
 
   minFilmsPerActor: 5, // 3 affichés + 2 pour l'indice — après regroupement des sagas
   maxFilmsPerActor: 8,
@@ -187,9 +187,12 @@ async function buildCredits(films) {
       if (!c.name || !c.id) continue;
       let a = actors.get(c.id);
       if (!a) {
-        a = { id: c.id, name: c.name.trim(), roles: [] };
+        a = { id: c.id, name: c.name.trim(), roles: [], photo: null };
         actors.set(c.id, a);
       }
+      // Le portrait est déjà dans les crédits : aucun appel supplémentaire.
+      // On garde celui du film le plus en vue, souvent le plus soigné.
+      if (!a.photo && c.profile_path) a.photo = c.profile_path;
       a.roles.push({ filmId, order: c.order });
     }
   });
@@ -413,6 +416,7 @@ function assemble(actors, films, natMap, epNumbers) {
       aka: [],
       region: a.region,
       level,
+      photo: a.photo || null,
       films: selection.slice(0, CONFIG.maxFilmsPerActor).map((f) => {
         const e = { t: f.t, y: f.y };
         if (f.eps && f.eps.length) e.eps = f.eps;
@@ -445,6 +449,9 @@ console.table(counts);
 const grouped = finalPool.reduce(
   (n, a) => n + a.films.filter((f) => f.eps).length, 0);
 console.log(`${grouped} entrées de saga regroupées.`);
+
+const noPhoto = finalPool.filter((a) => !a.photo).length;
+console.log(`${finalPool.length - noPhoto} portraits disponibles (${noPhoto} sans photo).`);
 
 const byLast = new Map();
 for (const a of finalPool) {
