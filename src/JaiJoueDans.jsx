@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo, useId } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import POOL from "./data/actors.json";
+import oscarImg from "./assets/oscar.png";
 
 /* ============================================================
    J'AI JOUÉ DANS — devine l'acteur à partir de sa filmographie
@@ -127,7 +128,7 @@ function Portrait({ actor }) {
           style={{ width: "100%", height: "100%", objectFit: "cover",
                    objectPosition: "center 22%" }} />
       ) : (
-        <span style={{ opacity: .45, lineHeight: 0 }}><Oscar size={34} /></span>
+        <span style={{ opacity: .45, lineHeight: 0 }}><Oscar size={30} /></span>
       )}
     </div>
   );
@@ -146,39 +147,22 @@ function maskedName(name) {
 }
 
 /* ---------- Logo ---------- */
+/* Statuette : image dans src/assets/oscar.png (ratio 256x576 ≈ 4:9).
+   size = largeur en px ; la hauteur suit le ratio. */
+const OSCAR_RATIO = 576 / 256;
+
 function Oscar({ size = 40, glow = false }) {
-  // useId évite que plusieurs statuettes sur la page partagent le même gradient
-  const gid = "osc" + useId().replace(/:/g, "");
   return (
-    <svg viewBox="0 0 48 96" width={size} height={size * 2} aria-hidden="true"
-         style={{ filter: glow ? `drop-shadow(0 0 10px ${C.gold}88)` : "none" }}>
-      <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor={C.goldLight} />
-          <stop offset="45%" stopColor={C.gold} />
-          <stop offset="100%" stopColor="#8A6A12" />
-        </linearGradient>
-      </defs>
-      <g fill={`url(#${gid})`}>
-        {/* tête et nuque */}
-        <ellipse cx="24" cy="8.6" rx="4.6" ry="5.4" />
-        <rect x="21.9" y="12" width="4.2" height="3.2" />
-        {/* corps : épaules larges, taille marquée, jambes séparées (fuseau évidé) */}
-        <path fillRule="evenodd" d="M24 14C28 14 31.6 15.6 33.4 18.6C34.8 21 35.2 24 34.8 27.4C34.2 32 32.4 35.6 31.6 39.6C31.1 42.4 31.6 45.2 32.2 48.4C33 53 32.8 61 32 67.6C31.5 71.2 31.2 72.8 31 74.2L17 74.2C16.8 72.8 16.5 71.2 16 67.6C15.2 61 15 53 15.8 48.4C16.4 45.2 16.9 42.4 16.4 39.6C15.6 35.6 13.8 32 13.2 27.4C12.8 24 13.2 21 14.6 18.6C16.4 15.6 20 14 24 14Z M24 50C25 57 25.2 67 25.2 74.2L22.8 74.2C22.8 67 23 57 24 50Z" />
-        {/* socle en deux redans */}
-        <path d="M15.2 74.2L32.8 74.2L33.4 79.4L14.6 79.4Z" />
-        <path d="M12.4 79.4L35.6 79.4L37.8 92.8L10.2 92.8Z" />
-      </g>
-      {/* bras croisés, mains jointes sur l'épée */}
-      <g fill="none" stroke="#7A5A10" strokeOpacity=".5" strokeWidth="1.15" strokeLinecap="round">
-        <path d="M15.6 25C16.2 32 18.6 36.4 23.2 37.6" />
-        <path d="M32.4 25C31.8 32 29.4 36.4 24.8 37.6" />
-        <path d="M20.6 37.2L27.4 37.2" />
-        <path d="M24 39L24 57" />
-      </g>
-      {/* arête du socle */}
-      <path d="M12.4 79.4L35.6 79.4L35.9 81.5L12.1 81.5Z" fill="#00000022" />
-    </svg>
+    <img
+      src={oscarImg} alt="" aria-hidden="true" draggable="false"
+      width={size} height={Math.round(size * OSCAR_RATIO)}
+      style={{
+        display: "block",
+        width: size, height: Math.round(size * OSCAR_RATIO),
+        objectFit: "contain",
+        filter: glow ? `drop-shadow(0 0 10px ${C.gold}88)` : "none",
+        userSelect: "none",
+      }} />
   );
 }
 
@@ -219,7 +203,7 @@ function Lives({ n }) {
          aria-label={`${n} vie${n > 1 ? "s" : ""} restante${n > 1 ? "s" : ""}`}>
       {Array.from({ length: LIVES_START }).map((_, i) => (
         <span key={i} style={{ opacity: i < n ? 1 : 0.18, lineHeight: 0 }}>
-          <Oscar size={11} />
+          <Oscar size={10} />
         </span>
       ))}
     </div>
@@ -390,7 +374,7 @@ export default function App() {
       <div style={panel}>
 
         <header style={{ display: "flex", alignItems: "center", gap: 14, justifyContent: "center" }}>
-          <Oscar size={26} glow />
+          <Oscar size={22} glow />
           <div style={{ textAlign: "center" }}>
             <h1 className="display" style={{
               margin: 0, fontSize: 30, letterSpacing: ".02em", lineHeight: 1,
@@ -402,7 +386,7 @@ export default function App() {
               Devinez l'acteur
             </div>
           </div>
-          <Oscar size={26} glow />
+          <Oscar size={22} glow />
         </header>
 
         {/* ---------- ACCUEIL ---------- */}
@@ -615,7 +599,7 @@ export default function App() {
           <div className="jjd-in" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <div style={{ textAlign: "center" }}>
               <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                <Oscar size={54} glow />
+                <Oscar size={46} glow />
               </div>
               <div style={{ fontSize: 11, letterSpacing: ".34em", textTransform: "uppercase",
                             opacity: .6 }}>Générique de fin</div>
