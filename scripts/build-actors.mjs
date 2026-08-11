@@ -37,8 +37,8 @@ const CONFIG = {
   mainRoleMaxOrder: 2,   // « tête d'affiche »
   anyRoleMaxOrder: 9,    // second rôle inclus
 
-  pctFameHigh: 0.75,  // facile / moyen
-  pctFameLow: 0.50,   // difficile
+  pctFameHigh: 0.82,  // facile / moyen
+  pctFameLow: 0.60,   // difficile
 
   minFilmsPerActor: 5, // 3 affichés + 2 pour l'indice — après regroupement des sagas
   maxFilmsPerActor: 8,
