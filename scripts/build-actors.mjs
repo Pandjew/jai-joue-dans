@@ -3,59 +3,59 @@
  *
  * Node 18+ requis (fetch natif).
  *   npm i dotenv
- *   node scripts/build-actors.mjs
+ *   npm run build:actors
  *
- * Variables d'environnement (.env à la racine) :
+ * .env à la racine :
  *   TMDB_TOKEN=eyJhbGciOi...      <- jeton de lecture v4 (Bearer), pas la clé v3
  *
  * Pipeline :
- *   1. Corpus de films   — TMDB /discover, trié par nombre de votes
- *   2. Castings          — TMDB /movie/{id}/credits, on garde l'ordre au générique
- *   3. Nationalités      — Wikidata SPARQL via P4985 (identifiant TMDB personne)
- *   4. Seuils            — percentiles de notoriété calculés PAR catégorie
- *   5. Assemblage        — attribution d'un niveau et export JSON
+ *   1. Corpus de films   — TMDB /discover, trié par nombre de votes, animation exclue
+ *   2. Castings + sagas  — TMDB /movie/{id} avec append_to_response=credits
+ *   3. Numéros d'épisode — TMDB /collection/{id}, ordonnés par date de sortie
+ *   4. Nationalités      — Wikidata SPARQL via P4985 (identifiant TMDB personne)
+ *   5. Seuils            — percentiles de notoriété calculés PAR catégorie
+ *   6. Assemblage        — regroupement des sagas, niveau, export JSON
  *
  * Toutes les réponses HTTP sont mises en cache sur disque (scripts/.cache).
- * Une réexécution ne recoûte donc presque rien.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import "dotenv/config";
 import { fileURLToPath } from "node:url";
+import "dotenv/config";
 
 /* =========================== RÉGLAGES =========================== */
 const CONFIG = {
-  // Taille du corpus. 1 page = 20 films.
   pagesGlobal: 200,   // ~4000 films mondiaux les plus votés
-  pagesFrance: 120,   // ~2400 films d'origine française (rattrape le déficit de votes)
-  pagesEurope: 100,   // ~2000 films d'autres pays européens
+  pagesFrance: 120,   // rattrape le déficit de votes du cinéma français
+  pagesEurope: 100,
 
-  minVotesFilm: 60,   // plancher absolu, écarte le bruit
+  minVotesFilm: 60,
   minYear: 1960,
 
   mainRoleMaxOrder: 2,   // « tête d'affiche »
-  anyRoleMaxOrder: 9,    // « second rôle » inclus
+  anyRoleMaxOrder: 9,    // second rôle inclus
 
-  // Percentiles de notoriété, calculés à l'intérieur de chaque catégorie
-  pctFameHigh: 0.75,  // facile / moyen : top 15 %
-  pctFameLow: 0.50,   // difficile      : top 50 %
+  pctFameHigh: 0.75,  // facile / moyen
+  pctFameLow: 0.50,   // difficile
 
-  minFilmsPerActor: 5, // 3 affichés + 2 pour l'indice
-  maxFilmsPerActor: 8, // ce qu'on stocke dans le JSON
+  minFilmsPerActor: 5, // 3 affichés + 2 pour l'indice — après regroupement des sagas
+  maxFilmsPerActor: 8,
 
   concurrency: 16,
   outFile: "../src/data/actors.json",
   cacheDir: ".cache",
 };
 
-// Pays européens hors France retenus pour le corpus et la catégorisation
 const EU_COUNTRIES = [
   "GB", "IE", "DE", "AT", "CH", "IT", "ES", "PT", "BE", "NL", "LU",
   "DK", "SE", "NO", "FI", "IS", "PL", "CZ", "SK", "HU", "RO", "BG",
   "GR", "HR", "RS", "SI", "EE", "LV", "LT", "UA", "RU",
 ];
+
+// 16 = animation, 99 = documentaire, 10770 = téléfilm
+const EXCLUDED_GENRES = "16,99,10770";
 
 /* ========================== UTILITAIRES ========================== */
 const TOKEN = process.env.TMDB_TOKEN;
@@ -83,9 +83,8 @@ async function tmdb(endpoint, params = {}) {
   const url = new URL("https://api.themoviedb.org/3" + endpoint);
   url.searchParams.set("language", "fr-FR");
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const key = url.toString();
 
-  return cached(key, async () => {
+  return cached(url.toString(), async () => {
     for (let attempt = 0; attempt < 5; attempt++) {
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${TOKEN}`, Accept: "application/json" },
@@ -102,7 +101,6 @@ async function tmdb(endpoint, params = {}) {
   });
 }
 
-// Exécute les tâches par lots, sans dépendance externe
 async function pool(items, worker, size = CONFIG.concurrency) {
   const out = [];
   let cursor = 0;
@@ -137,7 +135,7 @@ async function discover(pages, extra, label) {
       "vote_count.gte": CONFIG.minVotesFilm,
       "primary_release_date.gte": `${CONFIG.minYear}-01-01`,
       with_runtime_gte: 60,
-      without_genres: "99,10770", // documentaire, téléfilm
+      without_genres: EXCLUDED_GENRES,
       ...extra,
     })
   );
@@ -154,30 +152,37 @@ async function buildFilmCorpus() {
   const films = new Map();
   for (const m of batches.flat()) {
     if (!m?.id || films.has(m.id)) continue;
+    if ((m.genre_ids ?? []).includes(16)) continue; // filet de sécurité anti-animation
     const year = Number((m.release_date || "").slice(0, 4));
     if (!year || year < CONFIG.minYear) continue;
     const title = (m.title || m.original_title || "").trim();
     if (!title) continue;
-    films.set(m.id, { id: m.id, t: title, y: year, votes: m.vote_count });
+    films.set(m.id, { id: m.id, t: title, y: year, votes: m.vote_count, col: null });
   }
   console.log(`\n${films.size} films retenus au total.`);
   return films;
 }
 
-/* ================= 2. CASTINGS ================= */
+/* ============ 2. CASTINGS ET APPARTENANCE AUX SAGAS ============ */
 async function buildCredits(films) {
-  console.log("\n> Castings");
+  console.log("\n> Castings et sagas");
   const ids = [...films.keys()];
-  const actors = new Map(); // tmdbId -> { id, name, roles: [{filmId, order}] }
+  const actors = new Map();
 
   await pool(ids, async (filmId) => {
     let data;
     try {
-      data = await tmdb(`/movie/${filmId}/credits`);
+      data = await tmdb(`/movie/${filmId}`, { append_to_response: "credits" });
     } catch {
       return;
     }
-    for (const c of data.cast ?? []) {
+    if (data.belongs_to_collection) {
+      films.get(filmId).col = {
+        id: data.belongs_to_collection.id,
+        name: data.belongs_to_collection.name,
+      };
+    }
+    for (const c of data.credits?.cast ?? []) {
       if (c.order > CONFIG.anyRoleMaxOrder) continue;
       if (!c.name || !c.id) continue;
       let a = actors.get(c.id);
@@ -189,7 +194,6 @@ async function buildCredits(films) {
     }
   });
 
-  // On élague tout de suite : inutile d'interroger Wikidata pour 200 000 figurants
   for (const [id, a] of actors) {
     if (a.roles.length < CONFIG.minFilmsPerActor) actors.delete(id);
   }
@@ -197,16 +201,47 @@ async function buildCredits(films) {
   return actors;
 }
 
-/* ================= 3. NATIONALITÉS (WIKIDATA) ================= */
+/* ================= 3. NUMÉROS D'ÉPISODE ================= */
+async function buildEpisodeNumbers(films) {
+  console.log("\n> Numérotation des sagas");
+  const colIds = [...new Set([...films.values()].filter((f) => f.col).map((f) => f.col.id))];
+  const order = new Map(); // filmId -> numéro dans la saga
+
+  await pool(colIds, async (cid) => {
+    let data;
+    try {
+      data = await tmdb(`/collection/${cid}`);
+    } catch {
+      return;
+    }
+    const parts = (data.parts ?? [])
+      .filter((p) => p.release_date)
+      .sort((a, b) => a.release_date.localeCompare(b.release_date));
+    parts.forEach((p, i) => order.set(p.id, i + 1));
+  });
+
+  console.log(`${colIds.length} sagas identifiées.`);
+  return order;
+}
+
+// « Harry Potter Collection », « Saga Harry Potter », « Harry Potter - Saga » -> « Harry Potter »
+function cleanCollectionName(n) {
+  return n
+    .replace(/^(la\s+)?(saga|collection|s[ée]rie)\s+/i, "")
+    .replace(/\s*[-–—:]?\s*(collection|saga|anthologie|trilogie|int[ée]grale)\s*$/i, "")
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .trim();
+}
+
+/* ================= 4. NATIONALITÉS (WIKIDATA) ================= */
 async function fetchNationalities(actors) {
   console.log("\n> Nationalités (Wikidata)");
   const ids = [...actors.keys()];
   const chunks = [];
-  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));	
+  for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
 
-  const map = new Map(); // tmdbId -> code ISO pays
-
-let failed = 0;
+  const map = new Map();
+  let failed = 0;
 
   await pool(chunks, async (chunk) => {
     const values = chunk.map((id) => `"${id}"`).join(" ");
@@ -240,28 +275,26 @@ let failed = 0;
           } catch (e) {
             if (attempt === 5) throw e;
           }
-          // Attente croissante : 2s, 4s, 8s, 16s, 32s
           await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
         }
         throw new Error("Wikidata : trop de tentatives");
       });
     } catch {
       failed++;
-      return; // le lot n'est pas mis en cache, il sera retenté au prochain lancement
+      return;
     }
 
+    const rank = (c) => (c === "FR" ? 3 : EU_COUNTRIES.includes(c) ? 2 : c === "US" ? 1 : 0);
     for (const b of json.results.bindings) {
       const tmdbId = Number(b.tmdb.value);
       const iso = b.iso.value;
-	  const rank = (c) => (c === "FR" ? 3 : EU_COUNTRIES.includes(c) ? 2 : c === "US" ? 1 : 0);
       const prev = map.get(tmdbId);
       if (!prev || rank(iso) > rank(prev)) map.set(tmdbId, iso);
     }
-    await new Promise((r) => setTimeout(r, 300)); // on ménage l'endpoint public
+    await new Promise((r) => setTimeout(r, 300));
   }, 2);
 
-  if (failed) console.log(`\n   ${failed} lots en échec — relancez le script pour les rattraper.`); // Wikidata n'aime pas la concurrence, on reste doux
-
+  if (failed) console.log(`\n   ${failed} lots en échec — relancez le script pour les rattraper.`);
   console.log(`${map.size} acteurs rattachés à un pays.`);
   return map;
 }
@@ -273,27 +306,76 @@ function regionOf(iso) {
   return "other";
 }
 
-/* ================= 4 & 5. SEUILS ET ASSEMBLAGE ================= */
-function assemble(actors, films, natMap) {
+/* ================= 5 & 6. SEUILS ET ASSEMBLAGE ================= */
+
+/**
+ * Regroupe les films d'une même saga en une seule entrée.
+ * Deux films ou plus de la même collection -> « Harry Potter (2, 3, 4) ».
+ * Un film isolé garde son titre propre.
+ * La notoriété du groupe est celle de son épisode le plus vu.
+ */
+function groupSeries(filmList, epNumbers) {
+  const groups = new Map();
+  const ordered = [];
+
+  for (const f of filmList) {
+    if (!f.col) {
+      ordered.push({ single: f });
+      continue;
+    }
+    let g = groups.get(f.col.id);
+    if (!g) {
+      g = { name: f.col.name, items: [] };
+      groups.set(f.col.id, g);
+      ordered.push({ group: g });
+    }
+    g.items.push(f);
+  }
+
+  return ordered.map((e) => {
+    if (e.single) {
+      const f = e.single;
+      return { t: f.t, y: f.y, votes: f.votes, order: f.order };
+    }
+    const items = e.group.items;
+    if (items.length === 1) {
+      const f = items[0];
+      return { t: f.t, y: f.y, votes: f.votes, order: f.order };
+    }
+    const eps = items.map((f) => epNumbers.get(f.id)).filter(Boolean).sort((a, b) => a - b);
+    const years = items.map((f) => f.y).sort((a, b) => a - b);
+    return {
+      t: cleanCollectionName(e.group.name),
+      eps,
+      y: years[0],
+      y2: years[years.length - 1],
+      votes: Math.max(...items.map((f) => f.votes)),
+      order: Math.min(...items.map((f) => f.order)),
+    };
+  });
+}
+
+function assemble(actors, films, natMap, epNumbers) {
   console.log("\n> Seuils et assemblage");
 
-  // Rattachement région + filmographie enrichie
   const enriched = [];
   for (const a of actors.values()) {
     const iso = natMap.get(a.id);
     if (!iso) continue;
-    const region = regionOf(iso);
-    const filmo = a.roles
-      .map((r) => ({ ...films.get(r.filmId), order: r.order }))
-      .filter((f) => f && f.t);
-    // Un même film peut remonter deux fois (doublons de casting)
+
     const seen = new Set();
-    const uniq = filmo.filter((f) => (seen.has(f.id) ? false : seen.add(f.id)));
-    uniq.sort((x, y) => y.votes - x.votes);
-    enriched.push({ ...a, region, films: uniq });
+    const filmo = a.roles
+      .map((r) => {
+        const f = films.get(r.filmId);
+        return f ? { ...f, order: r.order } : null;
+      })
+      .filter((f) => f && f.t && !seen.has(f.id) && seen.add(f.id));
+
+    const grouped = groupSeries(filmo, epNumbers).sort((x, y) => y.votes - x.votes);
+    enriched.push({ ...a, region: regionOf(iso), films: grouped });
   }
 
-  // Seuils par catégorie : distribution des votes sur les films joués par cette catégorie
+  // Seuils par catégorie, calculés sur les entrées regroupées
   const thresholds = {};
   for (const region of ["fr", "eu", "us", "other"]) {
     const votes = [];
@@ -331,9 +413,12 @@ function assemble(actors, films, natMap) {
       aka: [],
       region: a.region,
       level,
-      films: selection
-        .slice(0, CONFIG.maxFilmsPerActor)
-        .map((f) => ({ t: f.t, y: f.y })),
+      films: selection.slice(0, CONFIG.maxFilmsPerActor).map((f) => {
+        const e = { t: f.t, y: f.y };
+        if (f.eps && f.eps.length) e.eps = f.eps;
+        if (f.y2 && f.y2 !== f.y) e.y2 = f.y2;
+        return e;
+      }),
     });
   }
 
@@ -344,29 +429,31 @@ function assemble(actors, films, natMap) {
 /* ============================ MAIN ============================ */
 const films = await buildFilmCorpus();
 const actors = await buildCredits(films);
+const epNumbers = await buildEpisodeNumbers(films);
 const natMap = await fetchNationalities(actors);
-const pool_ = assemble(actors, films, natMap);
+const finalPool = assemble(actors, films, natMap, epNumbers);
 
-// Rapport
 const counts = {};
-for (const a of pool_) {
+for (const a of finalPool) {
   const k = `${a.region}/${a.level}`;
   counts[k] = (counts[k] || 0) + 1;
 }
 console.log("\n=== Pool final ===");
-console.log(`${pool_.length} acteurs`);
+console.log(`${finalPool.length} acteurs`);
 console.table(counts);
 
-// Homonymes de patronyme : le jeu exigera le nom complet pour ceux-là
+const grouped = finalPool.reduce(
+  (n, a) => n + a.films.filter((f) => f.eps).length, 0);
+console.log(`${grouped} entrées de saga regroupées.`);
+
 const byLast = new Map();
-for (const a of pool_) {
+for (const a of finalPool) {
   const last = a.name.trim().split(/\s+/).pop().toLowerCase();
   byLast.set(last, (byLast.get(last) || 0) + 1);
 }
-const collisions = [...byLast].filter(([, n]) => n > 1);
-console.log(`${collisions.length} patronymes partagés (nom complet requis en jeu).`);
+console.log(`${[...byLast].filter(([, n]) => n > 1).length} patronymes partagés.`);
 
 const outPath = path.resolve(here, CONFIG.outFile);
 await fs.mkdir(path.dirname(outPath), { recursive: true });
-await fs.writeFile(outPath, JSON.stringify(pool_, null, 0));
+await fs.writeFile(outPath, JSON.stringify(finalPool, null, 0));
 console.log(`\nÉcrit : ${outPath}`);
